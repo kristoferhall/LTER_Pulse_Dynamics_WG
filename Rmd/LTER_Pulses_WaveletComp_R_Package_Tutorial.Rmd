@@ -1,0 +1,389 @@
+---
+title: "LTER Pulses WaveletComp R Package Tutorial"
+author: "KM Hall"
+date: "2022-09-14"
+output: html_document
+---
+
+Refer to guided tour document  
+
+Basic background for understanding a wavelet transform of a time series
+
+
+About the data: US-Seg: Sevilleta grassland AmeriFlux tower. Latitude/Longitude: 34.3623, -106.7020. Elevation: 1596 m. https://ameriflux.lbl.gov/sites/siteinfo/US-Seg
+
+
+
+
+```{r message=FALSE}
+library(WaveletComp)
+library(dplyr)
+library(matrixStats)
+library(tidyr)
+library(ggplot2)
+library(lubridate)
+library(readr)
+```
+
+
+
+Load the data
+```{r}
+seg <- read_csv("~/Documents/LTER_Pulse_Time_Series_WG/SEV_daily_flux/US-Seg_daily_aflx.csv") %>% 
+  mutate(date = mdy(Date)) %>%         # WaveletComp expects date var named "date"
+  select(-Date) %>% 
+  select(date, everything()) %>% 
+  arrange(date)                  # make sure data are properly sorted by date
+```
+
+```{r}
+str(seg)
+```
+```{r}
+nrow(seg)
+```
+
+
+
+A simple example to start - Average Daily Temperature:  
+```{r}
+seg %>% 
+  ggplot(aes(x = date, y = TA_avg)) +
+  geom_line(size = 0.4, color = "tan") +
+  labs(title = "US-Seg Flux Tower - Average Daily Temperature")
+```
+
+```{r}
+summary(seg)
+```
+Note that there is no missing data in this data set.  
+
+
+
+Time period of the US-Seg data:  
+```{r}
+seg %>% 
+  summarize(Start_Date = min(date),
+            End_Date = max(date))
+```
+
+
+Compute the wavelet power spectrum for Average Temperature time series:    
+
+```{r}
+seg_ta_avg.w <- analyze.wavelet(seg, "TA_avg",
+                                loess.span = 0.75,
+                                dt = 1, dj = 1/20,
+                                make.pval = TRUE, method = "white.noise",
+                                n.sim = 25)   # should set n.sim higher - default is 100
+
+# See the WaveletComp analyze.wavelet documentation for more argument options, such as lowerPeriod, upperPeriod, method, etc. 
+```
+
+
+Where do you think the most powerful periodicity will be for average temperature?  
+```{r}
+# you can define your continuous color palette
+# mypalette <-  "terrain.colors(100)" 
+
+wt.image(seg_ta_avg.w,
+         col.contour = "white",
+         # color.palette = mypalette,
+         lwd = 1,
+         show.date = TRUE,
+         main = "US-Seg Flux Tower Daily Mean Air Temperature (C)",
+         
+         legend.params = list(width = 1.8, label.digits = 4))
+
+```
+
+Average Power of the Series:  
+
+```{r}
+# look at the average power of the series
+maximum.level = 1.001*max(seg_ta_avg.w$Power.avg) # See WaveletComp Guided Tour for explanation
+wt.avg(seg_ta_avg.w, maximum.level = maximum.level,
+       legend.coords = "bottomright",
+       main = "Average Power for US-Seg Mean Daily Air Temperature")
+```
+
+Reconstruct the original time series for periods whose average power was found to be significant:  
+```{r}
+reconstruct(seg_ta_avg.w,
+            show.date = TRUE,
+            legend.coords = "bottomright",
+            ylim = c(-40, 20),
+            main = "Reconstruction of US-Seg Flux Tower \nDaily Mean Airt Temperature",
+            col = c('tan', 'black'))
+```
+
+
+The Period information can be used to find and examine periodicities of interest:  
+```{r}
+seg_ta_avg.w$Period
+```
+
+The 365-day periodicity is between records 151 and 152.  This looks at the power values for periods between 256 and 512 days - octaves 8 and 9.  
+
+First, convert power data to a matrix  
+```{r}
+seg_ta_avg.w_power <- as.matrix(seg_ta_avg.w$Power)
+
+```
+
+
+The dimensions of the Power matrix have the number of periods as columns and the number of records in the time series as rows
+```{r}
+dim(seg_ta_avg.w$Power)
+```
+
+It is then possible to pull out various results from analyze.wavelet. For example, looking at the periodicities from 256 to 512:  
+```{r}
+seg_256_to_512_power <- as.matrix(seg_ta_avg.w_power[141:161,])
+
+dimnames(seg_256_to_512_power) <- list(paste0("period_", round(seg_ta_avg.w$Period[141:161], 2)))
+
+seg_256_to_512_power_t <- as_tibble(t(seg_256_to_512_power))
+
+seg_256_to_512_power_df <- tibble(date = seg$date, seg_256_to_512_power_t)
+
+seg_256_to_512_power_df_long <- seg_256_to_512_power_df %>% 
+  pivot_longer(contains("period_"))
+
+seg_256_to_512_power_df_long %>% 
+  ggplot(aes(x = date, y = value, color = name)) +
+  geom_line() +
+  facet_wrap(~ name) +
+  theme(legend.position="none") +
+  labs(title = "Average daily temperature periods around 365",
+       x = "Date",
+       y = "Power")
+
+
+```
+
+Significant p-values:  
+```{r}
+seg_ta_avg.w_psig <- as.matrix(seg_ta_avg.w$Power.pval)
+
+seg_256_to_512_psig <- as.matrix(seg_ta_avg.w_psig[141:161,])
+
+dimnames(seg_256_to_512_psig) <- list(paste0("period_", round(seg_ta_avg.w$Period[141:161], 2)))
+
+seg_256_to_512_psig_t <- as_tibble(t(seg_256_to_512_psig))
+
+seg_256_to_512_psig_df <- tibble(date = seg$date, seg_256_to_512_psig_t)
+
+seg_256_to_512_psig_df_long <- seg_256_to_512_psig_df %>% 
+  pivot_longer(contains("period_"))
+
+seg_256_to_512_psig_df_long %>% 
+  ggplot(aes(x = date, y = value, color = name)) +
+  geom_line() +
+  facet_wrap(~ name) +
+  theme(legend.position="none") +
+  labs(title = "Average daily temperature power p-values around 365\n(y-axis free)",
+       x = "Date",
+       y = "p-value") +
+  facet_wrap(~name, scales = "free_y") 
+```
+
+The high power event in 2011  
+```{r}
+seg %>% 
+  filter(year(date) == 2011) %>% 
+  ggplot(aes(x = date, y = TA_avg)) +
+  geom_line(size = 0.6) +
+  labs(title = "2011 Daily Average Temperature (C)")
+```
+
+```{r}
+(start_2011 <- ymd("2011-01-01") - ymd(min(seg$date)))
+```
+
+```{r}
+(end_2011 <- ymd("2011-12-31") - ymd(min(seg$date)))
+```
+
+
+Look at power bands for periods 16-32
+```{r}
+seg_2011_power <- as.matrix(seg_ta_avg.w_power[61:81, 1461:1825])
+
+dimnames(seg_2011_power) <- list(paste0("period_", round(seg_ta_avg.w$Period[61:81], 2)))
+
+seg_2011_power_t <- as_tibble(t(seg_2011_power))
+
+seg_2011_power_df <- tibble(date = seq(from = ymd("2011-01-01"),
+                                       to = ymd("2011-12-31"),
+                                       by = "1 day"), 
+                            seg_2011_power_t)
+
+seg_2011_power_df_long <- seg_2011_power_df %>% 
+  pivot_longer(contains("period_"))
+
+seg_2011_power_df_long %>% 
+  ggplot(aes(x = date, y = value, color = name)) +
+  geom_line() +
+  facet_wrap(~ name) +
+  theme(legend.position="none") +
+  labs(title = "Average daily temperature in 2011",
+       x = "Date",
+       y = "Power")
+```
+
+That was to just show the basic analytic process and how to identify areas of interest in your wavelet images and data.  
+
+
+----  
+
+Another synthetic example that shows how wavelets can detect changes in periodicity.  
+
+This example is directly from the guided tour.  
+
+Wavelets are able to detect non-stationarity in time series - localized in time and frequency
+
+```{r}
+# made up data for example
+x1 <- periodic.series(start.period = 100, length = 400)
+x2 <- 1.5*periodic.series(start.period = 50, length = 200)
+x  <- c(x1, x2, x1) + 0.2*rnorm(1000)
+
+pretend.data <- data.frame(x = x)
+```
+
+```{r}
+pretend.data %>% 
+  ggplot(aes(x = seq(from = 1, to = 1000, by=1), y = x)) +
+  geom_line(size = 0.6, color = "tan") +
+  labs(title = "Non-Stationary Data Example",
+       x = "time",
+       y= "value")
+```
+
+
+
+
+```{r}
+
+pretend.w <- analyze.wavelet(pretend.data, "x",
+                        method = "white.noise",
+                        loess.span = 0,
+                        dt = 1, dj = 1/250,
+                        lowerPeriod = 32, upperPeriod = 256,
+                        make.pval = TRUE, n.sim = 10)
+
+wt.image(pretend.w, color.key = "interval", n.levels = 250,
+          legend.params = list(lab = "wavelet power levels"))
+```
+
+
+----  
+
+Cross-wavelet - analyze two time series variables 
+
+Daily Precipitation (mm) - P_int
+Net Ecosystem Exchange (gC/m^2) - NEE_int
+
+```{r}
+seg %>% 
+  ggplot(aes(x = date, y = P_int)) +
+  geom_line(size = 0.4, color = "tan") + 
+  labs(title = "US-Seg - Daily Precipitation",
+       x = "Date",
+       y = "Precipitation (mm)")
+```
+
+```{r}
+seg %>% 
+  ggplot(aes(x = date, y = NEE_int)) +
+  geom_line(size = 0.4, color = "tan") + 
+  labs(title = "US-Seg - Net Ecosystem Exchange",
+       x = "Date",
+       y = "NEE (gC/m^2)")
+```
+
+
+
+
+
+```{r}
+seg_p_int.w <- analyze.wavelet(seg, "P_int",
+                                loess.span = 0.75,
+                                dt = 1, dj = 1/20,
+                                make.pval = TRUE, method = "white.noise",
+                                n.sim = 25)
+```
+
+```{r}
+mypalette <-  "terrain.colors(100)" 
+
+wt.image(seg_p_int.w,
+         col.contour = "white",
+         color.palette = mypalette,
+         lwd = 1,
+         show.date = TRUE,
+         main = "US-Seg Flux Tower Daily Precipitation (mm)",
+         
+         legend.params = list(width = 1.8, label.digits = 4))
+```
+
+```{r}
+seg_nee_int.w <- analyze.wavelet(seg, "NEE_int",
+                                loess.span = 0.75,
+                                dt = 1, dj = 1/20,
+                                make.pval = TRUE, method = "white.noise",
+                                n.sim = 25)
+```
+```{r}
+wt.image(seg_nee_int.w,
+         col.contour = "white",
+         color.palette = mypalette,
+         lwd = 1,
+         show.date = TRUE,
+         main = "US-Seg Flux Tower Net Ecosystem Exchange (gC/m^2)",
+         
+         legend.params = list(width = 1.8, label.digits = 4))
+```
+
+Cross-wavelet analysis of precipitation and NEE  
+
+```{r}
+seg_precip_nee <- seg %>% 
+  select(date, P_int, NEE_int) %>% 
+  as.data.frame()
+
+
+seg_precip_nee.wc <- analyze.coherency(seg_precip_nee, my.pair = c("P_int", "NEE_int"), 
+                                       loess.span = 0.75,
+                                       dt = 1, dj = 1/20,
+                                       make.pval = TRUE,
+                                       n.sim = 20)
+
+```
+
+```{r}
+wc.image(seg_precip_nee.wc, 
+         main = "Cross-wavelet power spectrum for\nUS-Seg Precipitation and NEE",
+         legend.params = list(lab = "cross-wavelet power levels"),
+         periodlab = "period (days)",
+         col.contour = "white",
+         color.palette = mypalette,
+         lwd = .8,
+         show.date = TRUE,
+         col.arrow = "red",
+         which.image = "wp"
+)
+```
+
+```{r}
+wc.sel.phases(seg_precip_nee.wc, sel.period = 192,
+                   only.sig = TRUE,
+                   which.sig = "wc",
+                   siglvl = 0.05,
+                   phaselim = c(-pi,+pi), ## default if legend.horiz = FALSE
+                   legend.coords = "topright", legend.horiz = FALSE,
+                   main = "", sub = "", timelab = "")
+```
+
+
